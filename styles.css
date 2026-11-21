@@ -133,3 +133,8 @@ textarea:focus{border-color:var(--mist)}
 .clash .mid{display:flex;align-items:center;color:var(--muted);font-weight:700}
 .guide li{margin:10px 0 0 20px;font-size:15px}
 .guide li::marker{color:var(--accent);font-weight:700}
+
+/* 双人报告配对列表 */
+.pair-item{cursor:pointer;transition:background .15s}
+.pair-item:hover{background:var(--cream)}
+.pair-item .ans-q b{color:var(--accent)}

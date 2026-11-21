@@ -17,6 +17,7 @@ const K = {
   me: 'sx_me',            // {code, token, nickname}
   draft: 'sx_draft',      // {answers, skips, nickname, version}
   partner: 'sx_partner',  // 对方的报告码
+  pairs: 'sx_pairs',      // 本机涉及的双人报告缓存 [{partner_code, created_at}]
 };
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const normCode = raw => String(raw || '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
@@ -24,6 +25,47 @@ const urlParams = new URLSearchParams(location.search);
 
 const rpc = (fn, args) => sb.rpc(fn, args).then(r => { if (r.error) throw r.error; return r.data; });
 const one = r => Array.isArray(r) ? (r[0] || null) : r;
+
+// ---------- 双人报告配对记录（双方设备都可找回） ----------
+function savePair(codeA, codeB) {
+  const me = ls.get(K.me);
+  if (me && (me.code === codeA || me.code === codeB)) {
+    const partner = me.code === codeA ? codeB : codeA;
+    const list = (ls.get(K.pairs) || []).filter(p => p.partner_code !== partner);
+    list.unshift({ partner_code: partner, created_at: new Date().toISOString() });
+    ls.set(K.pairs, list.slice(0, 10));
+  }
+  rpc('save_pair', { p_a: codeA, p_b: codeB }).catch(() => {});
+}
+async function fetchPairs(code) {
+  try {
+    const rows = await rpc('get_pairs', { p_code: code });
+    const list = (rows || []).map(r => ({ partner_code: r.partner_code, created_at: r.created_at }));
+    if (list.length) ls.set(K.pairs, list);
+    return list;
+  } catch { return ls.get(K.pairs) || []; }
+}
+async function refreshPairs(boxId, myCode) {
+  const box = document.getElementById(boxId);
+  if (!box) return;
+  const list = await fetchPairs(myCode);
+  if (!box.isConnected) return;
+  if (!list.length) {
+    box.innerHTML = '<p class="muted" style="margin:0">还没有双人报告。对方用你的报告码配对后，这里会出现你们的双人报告，点开就能重看。</p>';
+    return;
+  }
+  box.innerHTML = list.map(p => {
+    const d = p.created_at ? new Date(p.created_at).toLocaleDateString('zh-CN') : '';
+    return `<div class="ans-item pair-item" data-code="${p.partner_code}">
+      <div class="ans-q">与 <b>${p.partner_code}</b> 的双人报告</div>
+      <div class="ans-line"><span class="muted">${d} · 点击查看</span></div>
+    </div>`;
+  }).join('');
+  box.querySelectorAll('.pair-item').forEach(el => {
+    el.onclick = () => openDual(myCode, el.dataset.code, () => home())
+      .catch(e => renderError('打开双人报告失败', String(e.message || e)));
+  });
+}
 
 // ---------- 路由 ----------
 async function boot() {
@@ -138,6 +180,15 @@ function home() {
       </div>
     </div>` : ''}
 
+    ${me ? `
+    <div class="entry-card">
+      <div class="entry-head">
+        <span class="entry-ico">💞</span>
+        <div><b>我们的双人报告</b><div class="muted">TA 用你的码配对过，这里就会出现你们的双人报告</div></div>
+      </div>
+      <div id="home-pairs" style="margin-top:8px"><p class="muted" style="margin:0">加载中…</p></div>
+    </div>` : ''}
+
     <div class="entry-card">
       <div class="entry-head">
         <span class="entry-ico">🐻</span>
@@ -182,6 +233,7 @@ function home() {
   $('#join').onclick = () => handleCode($('#code-input').value);
   $('#code-input').addEventListener('keydown', e => { if (e.key === 'Enter') handleCode($('#code-input').value); });
   if (me) {
+    refreshPairs('home-pairs', me.code);
     $('#my-report').onclick = () => showPersonal(me.code, me.token).catch(e => renderError('读取报告失败', String(e.message || e)));
     $('#copy-my').onclick = () => navigator.clipboard?.writeText(me.code).then(() => { $('#copy-my').textContent = '已复制 ✓'; });
   }
@@ -329,6 +381,9 @@ async function showPersonal(code, ownerToken, opts = {}) {
       <p class="muted" style="margin-top:10px">请保存好这个码：以后随时用它查看这份报告；<br>和别人的报告码放在一起，就能生成双人报告。</p>
     </div>` : ''}
 
+    <div class="section-title">我们的双人报告</div>
+    <div class="card" id="personal-pairs"><p class="muted" style="margin:0">加载中…</p></div>
+
     <div class="section-title">四轴倾向</div>
     <div class="card" id="axes"></div>
     ${p.uncertainty ? '<p class="muted" style="margin-top:-14px;margin-bottom:10px">「轻微 / 中性」表示该轴接近中间，不要强行贴标签。</p>' : ''}
@@ -373,6 +428,7 @@ async function showPersonal(code, ownerToken, opts = {}) {
   </section>`;
 
   renderAxes(p.axes);
+  refreshPairs('personal-pairs', code);
   $('#pair-input').onclick = () => pairInput(code);
   if (ownerToken) $('#my-answers').onclick = () => answersView(code, ownerToken, () => showPersonal(code, ownerToken));
   $('#copy-link').onclick = () => navigator.clipboard?.writeText(shareLink).then(() => { $('#copy-link').textContent = '已复制 ✓'; });
@@ -437,6 +493,7 @@ async function openDual(codeA, codeB, back, opts = {}) {
   const pa = { norm: p1.scores.norm, cmp, style: conflictStyle(p1.scores.norm), nickname: p1.nickname };
   const pb = { norm: p2.scores.norm, cmp, style: conflictStyle(p2.scores.norm), nickname: p2.nickname };
   const report = buildDual(pa, pb);
+  savePair(codeA, codeB);
   renderDual(report, { a: codeA, b: codeB, back }, opts);
 }
 
