@@ -81,7 +81,7 @@ async function handleCode(raw) {
   const code = normCode(raw);
   if (code.length !== 8) return renderError('报告码不完整', '报告码是 8 位字母数字组合，请检查后重新输入。');
   const me = ls.get(K.me);
-  if (me && me.code === code) return showPersonal(code, me.token);
+  if (me && me.code === code) return gatePersonal(code, () => showPersonal(code, me.token).catch(e => renderError('读取报告失败', String(e.message || e))));
   let prof;
   try { prof = one(await rpc('get_profile', { p_code: code })); }
   catch (e) { return renderError('查询失败', String(e.message || e)); }
@@ -112,7 +112,7 @@ function codeLanding(code, prof) {
     <p class="footer-note">生成双人报告需要你也有一份自己的测试结果 · 双星记</p>`}
   </section>`;
   if (old) { $('#retest').onclick = () => { ls.del(K.partner); home(); }; return; }
-  $('#view-this').onclick = () => showPersonal(code, null).catch(e => renderError('读取报告失败', String(e.message || e)));
+  $('#view-this').onclick = () => gatePersonal(code, () => showPersonal(code, null).catch(e => renderError('读取报告失败', String(e.message || e))));
   $('#pair').onclick = () => startPairFlow(code);
 }
 
@@ -234,7 +234,7 @@ function home() {
   $('#code-input').addEventListener('keydown', e => { if (e.key === 'Enter') handleCode($('#code-input').value); });
   if (me) {
     refreshPairs('home-pairs', me.code);
-    $('#my-report').onclick = () => showPersonal(me.code, me.token).catch(e => renderError('读取报告失败', String(e.message || e)));
+    $('#my-report').onclick = () => gatePersonal(me.code, () => showPersonal(me.code, me.token).catch(e => renderError('读取报告失败', String(e.message || e))));
     $('#copy-my').onclick = () => navigator.clipboard?.writeText(me.code).then(() => { $('#copy-my').textContent = '已复制 ✓'; });
   }
 }
@@ -328,15 +328,98 @@ function quiz(ctx) {
       if (ctx.partnerCode) {
         const ta = ctx.partnerCode;
         ls.del(K.partner);
-        return openDual(d.code, ta, () => home(), { justCreated: d.code })
-          .catch(e => renderError('生成双人报告失败', `你的报告码 ${d.code} 已生成并保存，请先记下它。` + String(e.message || e)));
+        return pwdSetup(d.code, d.owner_token, () =>
+          openDual(d.code, ta, () => home(), { justCreated: d.code })
+            .catch(e => renderError('生成双人报告失败', `你的报告码 ${d.code} 已生成并保存，请先记下它。` + String(e.message || e))));
       }
-      return showPersonal(d.code, d.owner_token, { firstTime: true });
+      return pwdSetup(d.code, d.owner_token);
     } catch (e) {
       renderError('提交失败', String(e.message || e) + '（你的答案已保存在本机，可关闭后重试）');
     }
   }
   render();
+}
+
+// ---------- 个人报告密码锁 ----------
+const unlocked = new Set(); // 本次页面会话内已解锁的报告码
+function gatePersonal(code, then) {
+  if (unlocked.has(code)) return then();
+  rpc('check_password', { p_code: code, p_password: '' })
+    .then(noPwd => {
+      if (noPwd) { unlocked.add(code); return then(); } // 未设密码的旧报告直接放行
+      renderPwdGate(code, then);
+    })
+    .catch(e => renderError('验证失败', String(e.message || e)));
+}
+function renderPwdGate(code, then) {
+  app.innerHTML = `
+  <section class="page active">
+    <div class="wait-hero">
+      <div class="bear-wrap" style="margin-bottom:8px">${bear('#3D5A80', '#E6EFF7', 92)}</div>
+      <div class="wait-title">输入查看密码</div>
+      <p class="muted" style="margin-top:8px">报告码 <b>${code}</b> 的个人报告受密码保护<br>只有本人能打开</p>
+    </div>
+    <div class="card"><input id="pwd" type="password" maxlength="8" placeholder="输入 4-8 位查看密码"></div>
+    <button class="btn btn-primary" id="pwd-go">解锁查看报告</button>
+    <div class="fb-hint" id="pwd-err"></div>
+    <button class="btn btn-secondary" id="pwd-back" style="height:44px;margin-top:10px">返回</button>
+    <p class="footer-note">密码由报告本人在生成时设置 · 双星记</p>
+  </section>`;
+  const go = () => {
+    const err = $('#pwd-err');
+    rpc('check_password', { p_code: code, p_password: $('#pwd').value }).then(ok => {
+      if (ok) { unlocked.add(code); then(); }
+      else { err.textContent = '密码不对，再试试'; err.className = 'fb-hint err'; $('#pwd').value = ''; $('#pwd').focus(); }
+    }).catch(e => { err.textContent = String(e.message || e); err.className = 'fb-hint err'; });
+  };
+  $('#pwd-go').onclick = go;
+  $('#pwd').addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+  $('#pwd-back').onclick = () => home();
+}
+
+// ---------- 生成报告后设置查看密码 ----------
+function pwdSetup(code, token, after = null) {
+  app.innerHTML = `
+  <section class="page active">
+    <div class="wait-hero">
+      <div class="bear-wrap" style="margin-bottom:8px">${bear('#3D5A80', '#E6EFF7', 92)}</div>
+      <div class="wait-title">报告生成成功！</div>
+      <p class="muted" style="margin-top:8px">最后一步：给报告设一个查看密码<br>以后查看这份个人报告都要用它解锁</p>
+    </div>
+    <div class="card" style="border-color:#3D5A80">
+      <div class="section-title" style="margin-top:0">你的报告码</div>
+      <div class="code-box" id="code">${code}</div>
+      <button class="btn btn-secondary" id="copy-code" style="height:44px;margin-top:12px">复制报告码</button>
+      <p class="muted" style="margin-top:10px">请保存好这个码：换设备后凭它找回报告；<br>和别人的报告码放在一起，就能生成双人报告。</p>
+    </div>
+    <div class="card">
+      <div class="section-title" style="margin-top:0">设置查看密码</div>
+      <input id="pwd-new" type="password" maxlength="8" placeholder="4-8 位字母或数字">
+      <input id="pwd-new2" type="password" maxlength="8" placeholder="再输一遍确认">
+      <p class="muted" style="margin-top:8px">· 查看这份个人报告时需要输入密码<br>· 双人报告不需要密码（配对即双方同意）<br>· 请自己记住密码，开发者也无法找回</p>
+    </div>
+    <button class="btn btn-primary" id="pwd-save">保存密码并查看报告</button>
+    <div class="fb-hint" id="pwd-err"></div>
+    <p class="footer-note">娱乐向测试，非心理评估 · 双星记</p>
+  </section>`;
+  $('#copy-code').onclick = () => navigator.clipboard?.writeText(code).then(() => { $('#copy-code').textContent = '已复制 ✓'; });
+  const save = async () => {
+    const p1 = $('#pwd-new').value, p2 = $('#pwd-new2').value;
+    const err = $('#pwd-err');
+    if (!/^[A-Za-z0-9]{4,8}$/.test(p1)) { err.textContent = '密码需要 4-8 位字母或数字'; err.className = 'fb-hint err'; return; }
+    if (p1 !== p2) { err.textContent = '两次输入的密码不一致'; err.className = 'fb-hint err'; return; }
+    const btn = $('#pwd-save'); btn.disabled = true; btn.textContent = '保存中…';
+    try {
+      const ok = await rpc('set_password', { p_code: code, p_owner_token: token, p_password: p1 });
+      if (!ok) throw new Error('保存失败，请重试');
+      unlocked.add(code);
+      after ? after() : showPersonal(code, token);
+    } catch (e) {
+      err.textContent = String(e.message || e); err.className = 'fb-hint err';
+      btn.disabled = false; btn.textContent = '保存密码并查看报告';
+    }
+  };
+  $('#pwd-save').onclick = save;
 }
 
 // ---------- 个人报告 ----------
@@ -517,8 +600,22 @@ function renderDual(r, ctx, opts = {}) {
         <div class="head"><span>综合契合度（${r.grade}）</span><span class="pct">${r.overall}%</span></div>
         <div class="mbar"><i class="fillbar" style="width:${r.overall}%"></i></div>
       </div>
-      <p class="muted" style="margin-top:10px">称号描述关系特征，分数描述本次问卷反映的契合程度，两者独立参考。百分比不等于“关系好坏”。</p>
+      <p class="muted" style="margin-top:10px">称号描述关系特征，分数描述本次问卷反映的契合程度，两者独立参考。百分比不等于“关系好坏”。<br>A = 输入的第一个报告码，B = 输入的第二个报告码，身份在整个报告中保持固定。</p>
     </div>
+
+    ${r.intro ? `
+    <div class="section-title">关系全解读</div>
+    <div class="card insight">${r.intro}</div>
+    ${r.intro2 ? `<div class="card insight">${r.intro2}</div>` : ''}
+    ${r.strengths?.length ? `
+    <div class="section-title">A和B的共同优势</div>
+    <div class="card"><ul class="guide">${r.strengths.map(s => `<li>${s}</li>`).join('')}</ul></div>` : ''}
+    ${r.watch ? `
+    <div class="section-title">需要留意的是</div>
+    <div class="card insight">${r.watch}</div>` : ''}
+    ${r.advice ? `
+    <div class="section-title">这段关系的相处建议</div>
+    <div class="card insight">${r.advice}</div>` : ''}` : ''}
 
     <div class="section-title">五大关系维度</div>
     <div class="card">
@@ -561,7 +658,7 @@ function renderDual(r, ctx, opts = {}) {
       </div>`).join('')
       : '<div class="card insight">本次测试没有检测到明显的“错位”模式，遇到拿不准的直接聊就好。</div>'}
 
-    <div class="section-title">相处建议</div>
+    <div class="section-title">按你们分数生成的相处建议</div>
     <div class="card"><ul class="guide">${r.guide.map(g => `<li>${g}</li>`).join('')}</ul></div>
 
     <div class="section-title">给开发者留言</div>
@@ -582,7 +679,7 @@ function renderDual(r, ctx, opts = {}) {
   </section>`;
 
   $('#copy-share').onclick = () => navigator.clipboard?.writeText(shareLink).then(() => { $('#copy-share').textContent = '已复制 ✓'; });
-  if ($('#my-personal')) $('#my-personal').onclick = () => showPersonal(me.code, me.token).catch(e => renderError('读取报告失败', String(e.message || e)));
+  if ($('#my-personal')) $('#my-personal').onclick = () => gatePersonal(me.code, () => showPersonal(me.code, me.token).catch(e => renderError('读取报告失败', String(e.message || e))));
   $('#back-btn').onclick = () => (ctx.back || home)();
   $('#fb-send').onclick = async () => {
     const content = $('#fb-content').value.trim();

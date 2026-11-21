@@ -3,7 +3,7 @@
 import { COMPARE_SETS } from './questions.js';
 import {
   MBTI, FUNC_NAME, FUNC_1ST, FUNC_2ND, FUNC_3RD, FUNC_4TH, FUNC_TAIL, FUNC_GAP, FUNC_COMBO,
-  needParagraphs, TITLES, NEUTRAL_TITLES, DIM_INFO, CLASH_RULES, GUIDE_RULES, GUIDE_FIXED,
+  needParagraphs, TITLES, NEUTRAL_TITLES, DIM_INFO, GUIDE_RULES, GUIDE_FIXED,
   CONFLICT_COMPAT, CONFLICT_LABEL, OVERALL_GRADE,
 } from './content.js';
 
@@ -190,26 +190,55 @@ export function buildDual(pa, pb) {
   const order = ['M', 'V', 'E', 'C', 'R'].map(k => ({ k, v: dims[k] })).sort((x, y) => y.v - x.v);
   const matches = order.map(x => ({ key: x.k, name: DIM_INFO[x.k].name, pct: pct(x.v) }));
   const best = order.slice(0, 2).map(x => ({ title: DIM_INFO[x.k].name, text: DIM_INFO[x.k].best }));
+
+  // 分歧文案：按 A/B 各自得分方向生成，明确写“A……”“B……”
+  const g = (o, k) => o[k] ?? 50;
+  const cmp = (x, y, hi, lo) => (x - y >= 8 ? hi : y - x >= 8 ? lo : `${hi}（与对方相近）`);
+  const frictionTexts = {
+    M: `A更偏${cmp(g(na, 'SN'), g(nb, 'SN'), '直觉和可能性', '具体和现实')}、${cmp(g(na, 'TF'), g(nb, 'TF'), '逻辑利弊', '感受和谐')}的判断方式，B更偏${cmp(g(nb, 'SN'), g(na, 'SN'), '直觉和可能性', '具体和现实')}、${cmp(g(nb, 'TF'), g(na, 'TF'), '逻辑利弊', '感受和谐')}的判断方式——讨论同一件事时容易各说各的，先对齐“我们在说什么”，再讨论谁对谁错。`,
+    V: 'A和B对“事情应该怎么办”的标准不一样：当A觉得B“太较真”时，B可能觉得A“不上心”。重大决定之前，先把各自看重的标准说开。',
+    E: 'A习惯表达关心的方式，未必是B最需要的；B期待的回应方式，A也未必习惯给出。与其互相猜测，不如直接告诉对方“我需要怎样的关心”。',
+    C: `A习惯${cmp(g(na, 'COMM'), g(nb, 'COMM'), '有话直说', '委婉和暗示')}，B习惯${cmp(g(nb, 'COMM'), g(na, 'COMM'), '有话直说', '委婉和暗示')}——不是谁不想说，是表达的频道不同。重要的事，请用对方听得懂的方式再说一遍。`,
+    R: `A更想${cmp(g(na, 'PLAN'), g(nb, 'PLAN'), '把计划提前定好', '保留随机应变的空间')}，B更想${cmp(g(nb, 'PLAN'), g(na, 'PLAN'), '把计划提前定好', '保留随机应变的空间')}——分歧大多出现在“计划”两个字上。共同活动前，先分清哪些必须定、哪些可以随意。`,
+  };
   const friction = [];
-  if (compat <= 60) friction.push({ title: '冲突处理', text: `冲突风格差异明显：一个是“${CONFLICT_LABEL[styleA]}”，一个是“${CONFLICT_LABEL[styleB]}”——给彼此一个“再开口”的时间，而不是逼对方立刻表态。` });
+  if (compat <= 60) friction.push({ title: '冲突处理', text: `A的冲突风格是“${CONFLICT_LABEL[styleA]}”，B是“${CONFLICT_LABEL[styleB]}”——给彼此一个“再开口”的时间，而不是逼对方立刻表态。` });
   for (const x of [...order].reverse()) {
-    if (friction.length < 2) friction.push({ title: DIM_INFO[x.k].name, text: DIM_INFO[x.k].friction });
+    if (friction.length < 2) friction.push({ title: DIM_INFO[x.k].name, text: frictionTexts[x.k] });
   }
 
-  const clashes = CLASH_RULES.filter(r => r.when(na, nb)).slice(0, 4)
-    .map(r => ({ title: r.title, text: r.text }));
+  // 视角差异：命中规则后按 A/B 谁触发生成定向描述
+  const clashes = [];
+  const addClash = (title, text) => { if (clashes.length < 4) clashes.push({ title, text }); };
+  const hi = (o, k, t = 65) => g(o, k) >= t;
+  const lo = (o, k, t = 45) => g(o, k) <= t;
+  if (hi(na, 'SPACE') && hi(nb, 'DEP')) addClash('空间与陪伴', 'A更需要独处恢复，B更希望通过陪伴建立连接。双方都没有错，关键是找到彼此舒适的距离。');
+  else if (hi(nb, 'SPACE') && hi(na, 'DEP')) addClash('空间与陪伴', 'B更需要独处恢复，A更希望通过陪伴建立连接。双方都没有错，关键是找到彼此舒适的距离。');
+  if (hi(na, 'PERC') && lo(nb, 'PERC')) addClash('主动察觉', 'A更希望对方主动注意自己的变化，B更习惯等待明确表达。需要减少猜测，增加主动沟通。');
+  else if (hi(nb, 'PERC') && lo(na, 'PERC')) addClash('主动察觉', 'B更希望对方主动注意自己的变化，A更习惯等待明确表达。需要减少猜测，增加主动沟通。');
+  if (hi(na, 'RESP') && hi(nb, 'RESP')) addClash('双向等待', 'A和B都比较在意回复和沟通的连续性。如果同时等待对方主动，容易出现不必要的失落。');
+  if (hi(na, 'COMM') && lo(nb, 'COMM')) addClash('直球与潜台词', 'A倾向于直接表达，B更习惯委婉沟通。需要避免把表达方式不同误解为态度不同。');
+  else if (hi(nb, 'COMM') && lo(na, 'COMM')) addClash('直球与潜台词', 'B倾向于直接表达，A更习惯委婉沟通。需要避免把表达方式不同误解为态度不同。');
+  if (Math.abs(g(na, 'PLAN') - g(nb, 'PLAN')) >= 30) addClash('计划节奏', g(na, 'PLAN') > g(nb, 'PLAN')
+    ? 'A更希望提前确定安排，B更愿意保留变化空间。共同活动最好提前明确必须确定的部分。'
+    : 'B更希望提前确定安排，A更愿意保留变化空间。共同活动最好提前明确必须确定的部分。');
+  if (hi(na, 'DEP') && hi(nb, 'SPACE')) addClash('亲密边界', 'A更希望通过陪伴建立连接，B更需要个人空间。关系稳定的关键不是谁改变自己，而是建立双方认可的互动节奏。');
+  else if (hi(nb, 'DEP') && hi(na, 'SPACE')) addClash('亲密边界', 'B更希望通过陪伴建立连接，A更需要个人空间。关系稳定的关键不是谁改变自己，而是建立双方认可的互动节奏。');
+  if (hi(na, 'D') && hi(nb, 'D')) addClash('双强表达', 'A和B在冲突中都比较直接，讨论效率可能较高，但也需要注意表达方式，避免让讨论变成竞争。');
+  if (hi(na, 'H') && hi(nb, 'H')) addClash('过度迁就', 'A和B都可能为了避免冲突而暂时让步，需要留意彼此的真实需求是否被长期隐藏。');
 
   const guideCtx = { compat, diff, V, playAvg };
   const guide = GUIDE_RULES.filter(r => r.when(guideCtx)).map(r => r.text).concat(GUIDE_FIXED).slice(0, 5);
 
   return {
     title: main.name, tag: main.tag, neutral: !!main.neutral,
+    intro: main.intro, intro2: main.intro2, strengths: main.strengths, watch: main.watch, advice: main.advice,
     aux: aux.map(t => t.name),
     grade: OVERALL_GRADE(overall), overall: pct(overall),
     matches, best, friction,
     comp: { pct: pct(Comp), parts: compParts.map(p => ({ name: p.name, v: pct(p.v) })) },
     compat: pct(compat), styleA, styleB, styleLabelA: CONFLICT_LABEL[styleA], styleLabelB: CONFLICT_LABEL[styleB],
     clashes, guide,
-    names: { a: pa.nickname || '我', b: pb.nickname || 'TA' },
+    names: { a: `A（${pa.nickname || '第一位'}）`, b: `B（${pb.nickname || '第二位'}）` },
   };
 }
